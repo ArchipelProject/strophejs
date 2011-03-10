@@ -27,7 +27,7 @@
  *  This Function object extension method creates a bound method similar
  *  to those in Python.  This means that the 'this' object will point
  *  to the instance you want.  See
- *  <a href='https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/Function/bind'>MDC's bind() documentation</a> and 
+ *  <a href='https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/Function/bind'>MDC's bind() documentation</a> and
  *  <a href='http://benjamin.smedbergs.us/blog/2007-01-03/bound-functions-and-function-imports-in-javascript/'>Bound Functions and Function Imports in JavaScript</a>
  *  for a complete explanation.
  *
@@ -36,7 +36,7 @@
  *
  *  Parameters:
  *    (Object) obj - The object that will become 'this' in the bound function.
- *    (Object) argN - An option argument that will be prepended to the 
+ *    (Object) argN - An option argument that will be prepended to the
  *      arguments given for the function call
  *
  *  Returns:
@@ -49,7 +49,7 @@ if (!Function.prototype.bind) {
         var _slice = Array.prototype.slice;
         var _concat = Array.prototype.concat;
         var _args = _slice.call(arguments, 1);
-        
+
         return function () {
             return func.apply(obj ? obj : this,
                               _concat.call(_args,
@@ -159,6 +159,15 @@ Strophe = {
      *  a version of head-HASH where HASH is a partial revision.
      */
     VERSION: "@VERSION@",
+
+    /** pointer to the setTimeout and clearTimeout functions to use.
+     *  It can be usefull to use a custom timer functions
+     *  For example, when strophejs is included in StropheCappuccino
+     *  It is far more optimized to use the CPRunLoop to hanle timers
+     * than mantaining two runloops in parallels
+     */
+    setTimeout: window.setTimeout,
+    clearTimeout: window.clearTimeout,
 
     /** Constants: XMPP Namespace Constants
      *  Common namespace constants from the XMPP RFCs and XEPs.
@@ -1437,7 +1446,7 @@ Strophe.Connection = function (service)
     this._sasl_challenge_handler = null;
 
     // setup onIdle callback every 1/10th of a second
-    this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
+    this._idleTimeout = self.setTimeout(this._onIdle.bind(this), 100);
 
     // initialize plugins
     for (var k in Strophe._connectionPlugins) {
@@ -1745,8 +1754,8 @@ Strophe.Connection.prototype = {
         }
 
         this._throttledRequestHandler();
-        clearTimeout(this._idleTimeout);
-        this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
+        Strophe.clearTimeout(this._idleTimeout);
+        this._idleTimeout = Strophe.setTimeout(this._onIdle.bind(this), 100);
     },
 
     /** Function: flush
@@ -1761,7 +1770,7 @@ Strophe.Connection.prototype = {
     {
         // cancel the pending idle period and run the idle function
         // immediately
-        clearTimeout(this._idleTimeout);
+        Strophe.clearTimeout(this._idleTimeout);
         this._onIdle();
     },
 
@@ -1861,8 +1870,8 @@ Strophe.Connection.prototype = {
         this._data.push("restart");
 
         this._throttledRequestHandler();
-        clearTimeout(this._idleTimeout);
-        this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
+        Strophe.clearTimeout(this._idleTimeout);
+        this._idleTimeout = Strophe.setTimeout(this._onIdle.bind(this), 100);
     },
 
     /** Function: addTimedHandler
@@ -2184,7 +2193,7 @@ Strophe.Connection.prototype = {
                 // Using a cube of the retry number creats a nicely
                 // expanding retry window
                 var backoff = Math.pow(req.sends, 3) * 1000;
-                setTimeout(sendFunc, backoff);
+                Strophe.setTimeout(sendFunc, backoff);
             } else {
                 sendFunc();
             }
@@ -3196,8 +3205,8 @@ Strophe.Connection.prototype = {
         }
 
         // reactivate the timer
-        clearTimeout(this._idleTimeout);
-        this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
+        Strophe.clearTimeout(this._idleTimeout);
+        this._idleTimeout = Strophe.setTimeout(this._onIdle.bind(this), 100);
     }
 };
 
