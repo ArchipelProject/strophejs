@@ -1472,7 +1472,7 @@ Strophe.TimedHandler.prototype = {
  *    (Integer) sends - The number of times this same request has been
  *      sent.
  */
-Strophe.Request = function (elem, func, rid, sends)
+Strophe.Request = function (elem, func, rid, worker, sends)
 {
     this.id = ++Strophe._requestId;
     this.xmlData = elem;
@@ -1497,6 +1497,11 @@ Strophe.Request = function (elem, func, rid, sends)
         return (now - this.dead) / 1000;
     };
     this.xhr = this._newXHR();
+    this.worker = worker;
+    this.bindedFunc = this.func.bind(null, this);
+    this.readyState = 0;
+    this.status = 0;
+    this.workerXHR = null;
 };
 
 Strophe.Request.prototype = {
@@ -1512,28 +1517,49 @@ Strophe.Request.prototype = {
      *  Returns:
      *    The DOM element tree of the response.
      */
-    getResponse: function ()
+    getResponse: function(e)
     {
         var node = null;
-        if (this.xhr.responseXML && this.xhr.responseXML.documentElement) {
-            node = this.xhr.responseXML.documentElement;
+        if (this.workerXHR.responseText)
+        {
+            node = (new DOMParser()).parseFromString(this.workerXHR.responseText, "text/xml").getElementsByTagName("body")[0];
             if (node.tagName == "parsererror") {
-                Strophe.error("invalid response received");
-                Strophe.error("responseText: " + this.xhr.responseText);
-                Strophe.error("responseXML: " +
-                              Strophe.serialize(this.xhr.responseXML));
                 throw "parsererror";
             }
-        } else if (this.xhr.responseText) {
-            Strophe.error("invalid response received");
-            Strophe.error("responseText: " + this.xhr.responseText);
-            Strophe.error("responseXML: " +
-                          Strophe.serialize(this.xhr.responseXML));
+            
         }
 
         return node;
     },
+    
+    onmessage: function(e)
+    {
+        if (e.data.rid == this.rid)
+        {
+            this.workerXHR = e.data.response;
+            this.readyState = this.workerXHR.readyState;
+            this.status = this.workerXHR.status;
 
+            if (this.readyState == 4)
+            {
+                this.worker.removeEventListener("message", this, false);
+            }
+            this.func(this);
+        }
+    },
+    
+    
+    handleEvent: function(e)
+    {
+        this.onmessage(e)
+    },
+    
+    send: function(service) 
+    {
+        this.worker.addEventListener("message", this, false);
+        this.worker.postMessage({"action": "send", "rid": this.rid, "service": service, "body": this.data})
+    },
+    
     /** PrivateFunction: _newXHR
      *  _Private_ helper function to create XMLHttpRequests.
      *
@@ -1555,7 +1581,7 @@ Strophe.Request.prototype = {
         }
 
         // use Function.bind() to prepend ourselves as an argument
-        xhr.onreadystatechange = this.func.bind(null, this);
+        //xhr.onreadystatechange = this.func.bind(null, this);
 
         return xhr;
     }
@@ -1652,7 +1678,9 @@ Strophe.Connection = function (service)
 
     // setup onIdle callback every 1/10th of a second
     this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
-
+    
+    this._worker = new Worker("Frameworks/Debug/StropheCappuccino/Resources/Strophe/worker.js");
+    
     // initialize plugins
     for (var k in Strophe._connectionPlugins) {
         if (Strophe._connectionPlugins.hasOwnProperty(k)) {
@@ -1664,6 +1692,8 @@ Strophe.Connection = function (service)
 	    this[k].init(this);
         }
     }
+    
+    this._worker.postMessage({"action": "start"});
 };
 
 Strophe.Connection.prototype = {
@@ -1829,7 +1859,9 @@ Strophe.Connection.prototype = {
             new Strophe.Request(body.tree(),
                                 this._onRequestStateChange.bind(
                                     this, _connect_cb.bind(this)),
-                                body.tree().getAttribute("rid")));
+                                body.tree().getAttribute("rid"),
+                                this._worker));
+
         this._throttledRequestHandler();
     },
 
@@ -2299,9 +2331,6 @@ Strophe.Connection.prototype = {
             }
         }
 
-        // IE6 fails on setting to null, so set to empty function
-        req.xhr.onreadystatechange = function () {};
-
         this._throttledRequestHandler();
     },
 
@@ -2336,8 +2365,8 @@ Strophe.Connection.prototype = {
         var reqStatus = -1;
 
         try {
-            if (req.xhr.readyState == 4) {
-                reqStatus = req.xhr.status;
+            if (req.readyState == 4) {
+                reqStatus = req.status;
             }
         } catch (e) {
             Strophe.error("caught an error in _requests[" + i +
@@ -2359,7 +2388,7 @@ Strophe.Connection.prototype = {
                               time_elapsed > Math.floor(Strophe.TIMEOUT * this.wait));
         var secondaryTimeout = (req.dead !== null &&
                                 req.timeDead() > Math.floor(Strophe.SECONDARY_TIMEOUT * this.wait));
-        var requestCompletedWithServerError = (req.xhr.readyState == 4 &&
+        var requestCompletedWithServerError = (req.readyState == 4 &&
                                                (reqStatus < 1 ||
                                                 reqStatus >= 500));
         if (primaryTimeout || secondaryTimeout ||
@@ -2370,37 +2399,40 @@ Strophe.Connection.prototype = {
                               " timed out (secondary), restarting");
             }
             req.abort = true;
-            req.xhr.abort();
+            // req.xhr.abort(); @ TODO ?
             // setting to null fails on IE6, so set to empty function
-            req.xhr.onreadystatechange = function () {};
+            // req.xhr.onreadystatechange = function () {};
             this._requests[i] = new Strophe.Request(req.xmlData,
                                                     req.origFunc,
                                                     req.rid,
+                                                    this._worker,
                                                     req.sends);
             req = this._requests[i];
         }
 
-        if (req.xhr.readyState === 0) {
+        if (req.readyState === 0) {
             Strophe.debug("request id " + req.id +
                           "." + req.sends + " posting");
 
-            try {
-                req.xhr.open("POST", this.service, true);
-            } catch (e2) {
-                Strophe.error("XHR open failed.");
-                if (!this.connected) {
-                    this._changeConnectStatus(Strophe.Status.CONNFAIL,
-                                              "bad-service");
-                }
-                this.disconnect();
-                return;
-            }
+            // try {
+            //     req.xhr.open("POST", this.service, true);
+            // } catch (e2) {
+            //     Strophe.error("XHR open failed.");
+            //     if (!this.connected) {
+            //         this._changeConnectStatus(Strophe.Status.CONNFAIL,
+            //                                   "bad-service");
+            //     }
+            //     this.disconnect();
+            //     return;
+            // }
 
             // Fires the XHR request -- may be invoked immediately
             // or on a gradually expanding retry window for reconnects
-            var sendFunc = function () {
+            var sendFunc = function (worker, service) {
                 req.date = new Date();
-                req.xhr.send(req.data);
+                //req.xhr.send(req.data);
+
+                req.send(service)
             };
 
             // Implement progressive backoff for reconnects --
@@ -2412,7 +2444,7 @@ Strophe.Connection.prototype = {
                                        Math.pow(req.sends, 3)) * 1000;
                 setTimeout(sendFunc, backoff);
             } else {
-                sendFunc();
+                sendFunc(this._worker, this.service);
             }
 
             req.sends++;
@@ -2427,7 +2459,7 @@ Strophe.Connection.prototype = {
             Strophe.debug("_processRequest: " +
                           (i === 0 ? "first" : "second") +
                           " request has readyState of " +
-                          req.xhr.readyState);
+                          req.readyState);
         }
     },
 
@@ -2479,8 +2511,7 @@ Strophe.Connection.prototype = {
     {
         Strophe.debug("request id " + req.id +
                       "." + req.sends + " state changed to " +
-                      req.xhr.readyState);
-
+                      req.readyState);
         if (req.abort) {
             req.abort = false;
             return;
@@ -2488,10 +2519,10 @@ Strophe.Connection.prototype = {
 
         // request complete
         var reqStatus;
-        if (req.xhr.readyState == 4) {
+        if (req.readyState == 4) {
             reqStatus = 0;
             try {
-                reqStatus = req.xhr.status;
+                reqStatus = req.status;
             } catch (e) {
                 // ignore errors from undefined status attribute.  works
                 // around a browser bug
@@ -2734,8 +2765,9 @@ Strophe.Connection.prototype = {
 
         var req = new Strophe.Request(body.tree(),
                                       this._onRequestStateChange.bind(
-                                          this, this._dataRecv.bind(this)),
-                                      body.tree().getAttribute("rid"));
+                                        this, this._dataRecv.bind(this)),
+                                      body.tree().getAttribute("rid"),
+                                      this._worker);
 
         this._requests.push(req);
         this._throttledRequestHandler();
@@ -2850,7 +2882,8 @@ Strophe.Connection.prototype = {
                 new Strophe.Request(body.tree(),
                                     this._onRequestStateChange.bind(
                                         this, _callback.bind(this)),
-                                    body.tree().getAttribute("rid")));
+                                    body.tree().getAttribute("rid"),
+                                    this._worker));
             this._throttledRequestHandler();
             return;
         }
@@ -3501,10 +3534,10 @@ Strophe.Connection.prototype = {
         while (this._requests.length > 0) {
             req = this._requests.pop();
             req.abort = true;
-            req.xhr.abort();
+            // req.xhr.abort();
             // jslint complains, but this is fine. setting to empty func
             // is necessary for IE6
-            req.xhr.onreadystatechange = function () {};
+            // req.xhr.onreadystatechange = function () {};
         }
 
         // actually disconnect
@@ -3590,7 +3623,8 @@ Strophe.Connection.prototype = {
                 new Strophe.Request(body.tree(),
                                     this._onRequestStateChange.bind(
                                         this, this._dataRecv.bind(this)),
-                                    body.tree().getAttribute("rid")));
+                                    body.tree().getAttribute("rid"),
+                                    this._worker));
             this._processRequest(this._requests.length - 1);
         }
 
