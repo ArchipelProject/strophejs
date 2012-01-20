@@ -27,7 +27,7 @@
  *  This Function object extension method creates a bound method similar
  *  to those in Python.  This means that the 'this' object will point
  *  to the instance you want.  See
- *  <a href='https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/Function/bind'>MDC's bind() documentation</a> and 
+ *  <a href='https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/Function/bind'>MDC's bind() documentation</a> and
  *  <a href='http://benjamin.smedbergs.us/blog/2007-01-03/bound-functions-and-function-imports-in-javascript/'>Bound Functions and Function Imports in JavaScript</a>
  *  for a complete explanation.
  *
@@ -36,7 +36,7 @@
  *
  *  Parameters:
  *    (Object) obj - The object that will become 'this' in the bound function.
- *    (Object) argN - An option argument that will be prepended to the 
+ *    (Object) argN - An option argument that will be prepended to the
  *      arguments given for the function call
  *
  *  Returns:
@@ -200,8 +200,8 @@ Strophe = {
     },
 
 
-    /** Constants: XHTML_IM Namespace 
-     *  contains allowed tags, tag attributes, and css properties. 
+    /** Constants: XHTML_IM Namespace
+     *  contains allowed tags, tag attributes, and css properties.
      *  Used in the createHtml function to filter incoming html into the allowed XHTML-IM subset.
      *  See http://xmpp.org/extensions/xep-0071.html#profile-summary for the list of recommended
      *  allowed tags and their attributes.
@@ -255,7 +255,7 @@ Strophe = {
 		}
     },
 
-    /** Function: addNamespace 
+    /** Function: addNamespace
      *  This function is used to extend the current namespaces in
      *	Strophe.NS.  It takes a key and a value with the key being the
      *	name of the new namespace, with its actual value.
@@ -1272,7 +1272,7 @@ Strophe.Handler = function (handler, ns, name, type, id, from, options)
     this.type = type;
     this.id = id;
     this.options = options || {matchbare: false};
-    
+
     // default matchBare to false if undefined
     if (!this.options.matchBare) {
         this.options.matchBare = false;
@@ -1302,7 +1302,7 @@ Strophe.Handler.prototype = {
     {
         var nsMatch;
         var from = null;
-        
+
         if (this.options.matchBare) {
             from = Strophe.getBareJidFromJid(elem.getAttribute('from'));
         } else {
@@ -1496,12 +1496,11 @@ Strophe.Request = function (elem, func, rid, worker, sends)
         var now = new Date();
         return (now - this.dead) / 1000;
     };
-    this.xhr = this._newXHR();
     this.worker = worker;
     this.bindedFunc = this.func.bind(null, this);
     this.readyState = 0;
     this.status = 0;
-    this.workerXHR = null;
+    this.workerReply = null;
 };
 
 Strophe.Request.prototype = {
@@ -1520,70 +1519,54 @@ Strophe.Request.prototype = {
     getResponse: function(e)
     {
         var node = null;
-        if (this.workerXHR.responseText)
+        if (this.workerReply.responseText)
         {
-            node = (new DOMParser()).parseFromString(this.workerXHR.responseText, "text/xml").getElementsByTagName("body")[0];
+            node = (new DOMParser()).parseFromString(this.workerReply.responseText, "text/xml").getElementsByTagName("body")[0];
             if (node.tagName == "parsererror") {
                 throw "parsererror";
             }
-            
         }
 
         return node;
     },
-    
-    onmessage: function(e)
+
+    abortWorkerRequest: function()
+    {
+        if (this.worker)
+        {
+            this.worker.removeEventListener("message", this, true);
+            this.worker.postMessage({"action": "abort", "rid": this.rid})
+        }
+    },
+
+    handleEvent: function(e)
     {
         if (e.data.rid == this.rid)
         {
-            this.workerXHR = e.data.response;
-            this.readyState = this.workerXHR.readyState;
-            this.status = this.workerXHR.status;
+            this.workerReply = e.data;
+            this.readyState = this.workerReply.readyState;
+            this.status = this.workerReply.status;
+            this.responseText = this.workerReply.responseText;
 
             if (this.readyState == 4)
             {
-                this.worker.removeEventListener("message", this, false);
+                if (this.worker)
+                    this.worker.removeEventListener("message", this, true)
             }
-            this.func(this);
+
+            this.bindedFunc(this);
         }
     },
-    
-    
-    handleEvent: function(e)
+
+    send: function(service)
     {
-        this.onmessage(e)
-    },
-    
-    send: function(service) 
-    {
-        this.worker.addEventListener("message", this, false);
-        this.worker.postMessage({"action": "send", "rid": this.rid, "service": service, "body": this.data})
-    },
-    
-    /** PrivateFunction: _newXHR
-     *  _Private_ helper function to create XMLHttpRequests.
-     *
-     *  This function creates XMLHttpRequests across all implementations.
-     *
-     *  Returns:
-     *    A new XMLHttpRequest.
-     */
-    _newXHR: function ()
-    {
-        var xhr = null;
-        if (window.XMLHttpRequest) {
-            xhr = new XMLHttpRequest();
-            if (xhr.overrideMimeType) {
-                xhr.overrideMimeType("text/xml");
-            }
-        } else if (window.ActiveXObject) {
-            xhr = new ActiveXObject("Microsoft.XMLHTTP");
+        this.date = new Date();
+        if (this.worker)
+        {
+            this.worker.removeEventListener("message", this, true)
+            this.worker.addEventListener("message", this, true);
+            this.worker.postMessage({"action": "send", "rid": this.rid, "service": service, "body": this.data})
         }
-
-        // use Function.bind() to prepend ourselves as an argument
-        //xhr.onreadystatechange = this.func.bind(null, this);
-
-        return xhr;
     }
 };
 
@@ -1678,9 +1661,9 @@ Strophe.Connection = function (service)
 
     // setup onIdle callback every 1/10th of a second
     this._idleTimeout = setTimeout(this._onIdle.bind(this), 100);
-    
-    this._worker = new Worker("Frameworks/Debug/StropheCappuccino/Resources/Strophe/worker.js");
-    
+
+    this._worker = null;
+
     // initialize plugins
     for (var k in Strophe._connectionPlugins) {
         if (Strophe._connectionPlugins.hasOwnProperty(k)) {
@@ -1692,8 +1675,6 @@ Strophe.Connection = function (service)
 	    this[k].init(this);
         }
     }
-    
-    this._worker.postMessage({"action": "start"});
 };
 
 Strophe.Connection.prototype = {
@@ -1726,6 +1707,9 @@ Strophe.Connection.prototype = {
         this.authenticated = false;
         this.disconnecting = false;
         this.connected = false;
+        if (this._worker)
+            this._worker.terminate();
+        this._worker = null;
 
         this.errors = 0;
 
@@ -1825,6 +1809,8 @@ Strophe.Connection.prototype = {
         this.connected = false;
         this.authenticated = false;
         this.errors = 0;
+        this._worker = this._makeWorker();
+        this._worker.postMessage({"action": "start"});
 
         this.wait = wait || this.wait;
         this.hold = hold || this.hold;
@@ -1863,6 +1849,74 @@ Strophe.Connection.prototype = {
                                 this._worker));
 
         this._throttledRequestHandler();
+    },
+
+    _makeWorker: function()
+    {
+        var blob = ""
+        + " var requests = {}; \n"
+        + " self.onmessage = function (e) { \n"
+        + "     var action = e.data.action, \n"
+        + "         data = e.data; \n"
+        + "     switch (action) { \n"
+        + "         case 'send': \n"
+        + "             req = new WorkerRequest(data.rid, data.service, data.body); \n"
+        + "             if (data.rid in requests) \n"
+        + "                 requests[data.rid].abort(); \n"
+        + "             requests[data.rid] = req; \n"
+        + "             req.perform(); \n"
+        + "             break; \n"
+        + "         case 'abort': \n"
+        + "             req = requests[data.rid]; \n"
+        + "             if (!req) \n"
+        + "                 return; \n"
+        + "             req.abort(); \n"
+        + "             delete requests[data.rid]; \n"
+        + "             break; \n"
+        + "     } "
+        + " }; \n"
+        + " WorkerRequest = function(rid, service, body) { \n"
+        + "     this.rid = rid; \n"
+        + "     this.service = service; \n"
+        + "     this.body = body; \n"
+        + "     this._xhr = new XMLHttpRequest(); \n"
+        + " }; \n"
+        + " WorkerRequest.prototype = { \n"
+        + "     perform: function() { \n"
+        + "         this._xhr.addEventListener('readystatechange', this, false); \n"
+        + "         this._xhr.open('POST', this.service, true); \n"
+        + "         this._xhr.send(this.body); \n"
+        + "     }, \n"
+        + "     abort: function() { \n"
+        + "         if (this._xhr) { \n"
+        + "             this._xhr.removeEventListener('readystatechange', this, false); \n"
+        + "             this._xhr.abort(); \n"
+        + "         } \n"
+        + "     }, \n"
+        + "     handleEvent: function(e) { \n"
+        + "         try { \n"
+        + "             status = e.target.status; \n"
+        + "         } catch(e) {status = undefined;} \n"
+        + "         self.postMessage({'rid': this.rid, 'readyState': e.target.readyState, 'responseText': e.target.responseText, 'status': status}); \n"
+        + "         if (e.target.readyState === 4) \n"
+        + "             delete requests[this.rid]; \n"
+        + "     } "
+        + " }";
+
+        //return new Worker("Frameworks/Debug/StropheCappuccino/Resources/Strophe/worker.js");
+        var blobBuilder;
+        if (window.BlobBuilder)
+            blobBuilder = new window.BlobBuilder();
+        else if (window.WebKitBlobBuilder)
+            blobBuilder = new window.WebKitBlobBuilder();
+        else if (window.MozBlobBuilder)
+            blobBuilder = new window.MozBlobBuilder();
+
+        blobBuilder.append(blob);
+
+        var blobURL = window.webkitURL.createObjectURL(blobBuilder.getBlob());
+
+        return new Worker(blobURL);
     },
 
     /** Function: attach
@@ -2106,7 +2160,7 @@ Strophe.Connection.prototype = {
                 message: "Cannot queue non-DOMElement."
             };
         }
-        
+
         this._data.push(element);
     },
 
@@ -2399,9 +2453,7 @@ Strophe.Connection.prototype = {
                               " timed out (secondary), restarting");
             }
             req.abort = true;
-            // req.xhr.abort(); @ TODO ?
-            // setting to null fails on IE6, so set to empty function
-            // req.xhr.onreadystatechange = function () {};
+            req.abortWorkerRequest();
             this._requests[i] = new Strophe.Request(req.xmlData,
                                                     req.origFunc,
                                                     req.rid,
@@ -2414,6 +2466,7 @@ Strophe.Connection.prototype = {
             Strophe.debug("request id " + req.id +
                           "." + req.sends + " posting");
 
+            // @TODO: check this on the worker
             // try {
             //     req.xhr.open("POST", this.service, true);
             // } catch (e2) {
@@ -2426,28 +2479,26 @@ Strophe.Connection.prototype = {
             //     return;
             // }
 
+            // @TODO: reimplement this in a better way in the worker
             // Fires the XHR request -- may be invoked immediately
             // or on a gradually expanding retry window for reconnects
-            var sendFunc = function (worker, service) {
-                req.date = new Date();
-                //req.xhr.send(req.data);
-
-                req.send(service)
-            };
-
-            // Implement progressive backoff for reconnects --
-            // First retry (send == 1) should also be instantaneous
-            if (req.sends > 1) {
-                // Using a cube of the retry number creates a nicely
-                // expanding retry window
-                var backoff = Math.min(Math.floor(Strophe.TIMEOUT * this.wait),
-                                       Math.pow(req.sends, 3)) * 1000;
-                setTimeout(sendFunc, backoff);
-            } else {
-                sendFunc(this._worker, this.service);
-            }
-
-            req.sends++;
+            // var sendFunc = function (worker, service) {
+            //     req.date = new Date();
+            //     req.send(service)
+            // };
+            // // Implement progressive backoff for reconnects --
+            // // First retry (send == 1) should also be instantaneous
+            // if (req.sends > 1) {
+            //     // Using a cube of the retry number creates a nicely
+            //     // expanding retry window
+            //     var backoff = Math.min(Math.floor(Strophe.TIMEOUT * this.wait),
+            //                            Math.pow(req.sends, 3)) * 1000;
+            //     setTimeout(sendFunc, backoff);
+            // } else {
+            //     sendFunc(this._worker, this.service);
+            // }
+            // req.sends++;
+            req.send(service)
 
             if (this.xmlOutput !== Strophe.Connection.prototype.xmlOutput) {
                 this.xmlOutput(req.xmlData);
@@ -2632,6 +2683,14 @@ Strophe.Connection.prototype = {
             this.connected = false;
         }
 
+        if (this._worker)
+        {
+            this._worker.onmessage = function(){};
+            this._worker.terminate();
+        }
+        this._worker = null;
+
+
         // delete handlers
         this.handlers = [];
         this.timedHandlers = [];
@@ -2792,7 +2851,6 @@ Strophe.Connection.prototype = {
     _connect_cb: function (req, _callback)
     {
         Strophe.info("_connect_cb was called");
-
         this.connected = true;
         var bodyWrap = req.getResponse();
         if (!bodyWrap) { return; }
@@ -3534,10 +3592,7 @@ Strophe.Connection.prototype = {
         while (this._requests.length > 0) {
             req = this._requests.pop();
             req.abort = true;
-            // req.xhr.abort();
-            // jslint complains, but this is fine. setting to empty func
-            // is necessary for IE6
-            // req.xhr.onreadystatechange = function () {};
+            req.abortWorkerRequest();
         }
 
         // actually disconnect
