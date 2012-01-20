@@ -2498,7 +2498,7 @@ Strophe.Connection.prototype = {
             //     sendFunc(this._worker, this.service);
             // }
             // req.sends++;
-            req.send(service)
+            req.send(this.service)
 
             if (this.xmlOutput !== Strophe.Connection.prototype.xmlOutput) {
                 this.xmlOutput(req.xmlData);
