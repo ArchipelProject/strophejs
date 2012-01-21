@@ -1501,6 +1501,7 @@ Strophe.Request = function (elem, func, rid, worker, sends)
     this.readyState = 0;
     this.status = 0;
     this.workerReply = null;
+    this.onMessageBound = this.onMessage.bind(this);
 };
 
 Strophe.Request.prototype = {
@@ -1534,12 +1535,12 @@ Strophe.Request.prototype = {
     {
         if (this.worker)
         {
-            this.worker.removeEventListener("message", this, true);
+            this.worker.removeEventListener("message", this.onMessageBound, true);
             this.worker.postMessage({"action": "abort", "rid": this.rid})
         }
     },
 
-    handleEvent: function(e)
+    onMessage: function(e)
     {
         if (e.data.rid == this.rid)
         {
@@ -1551,9 +1552,8 @@ Strophe.Request.prototype = {
             if (this.readyState == 4)
             {
                 if (this.worker)
-                    this.worker.removeEventListener("message", this, true)
+                    this.worker.removeEventListener("message", this.onMessageBound, true)
             }
-
             this.bindedFunc(this);
         }
     },
@@ -1563,8 +1563,8 @@ Strophe.Request.prototype = {
         this.date = new Date();
         if (this.worker)
         {
-            this.worker.removeEventListener("message", this, true)
-            this.worker.addEventListener("message", this, true);
+            this.worker.removeEventListener("message", this.onMessageBound, true)
+            this.worker.addEventListener("message", this.onMessageBound, true);
             this.worker.postMessage({"action": "send", "rid": this.rid, "service": service, "body": this.data})
         }
     }
@@ -1854,6 +1854,17 @@ Strophe.Connection.prototype = {
     _makeWorker: function()
     {
         var blob = ""
+        + " if (!Function.prototype.bind) { \n"
+        + "     Function.prototype.bind = function (obj /*, arg1, arg2, ... */) { \n"
+        + "         var func = this; \n"
+        + "         var _slice = Array.prototype.slice; \n"
+        + "         var _concat = Array.prototype.concat; \n"
+        + "         var _args = _slice.call(arguments, 1); \n"
+        + "         return function () { \n"
+        + "             return func.apply(obj ? obj : this, _concat.call(_args, _slice.call(arguments, 0))); \n"
+        + "         }; \n"
+        + "     }; \n"
+        + " }; \n"
         + " var requests = {}; \n"
         + " self.onmessage = function (e) { \n"
         + "     var action = e.data.action, \n"
@@ -1880,20 +1891,21 @@ Strophe.Connection.prototype = {
         + "     this.service = service; \n"
         + "     this.body = body; \n"
         + "     this._xhr = new XMLHttpRequest(); \n"
+        + "     this.onResponseBount = this.onResponse.bind(this); \n"
         + " }; \n"
         + " WorkerRequest.prototype = { \n"
         + "     perform: function() { \n"
-        + "         this._xhr.addEventListener('readystatechange', this, false); \n"
+        + "         this._xhr.addEventListener('readystatechange', this.onResponseBount, false); \n"
         + "         this._xhr.open('POST', this.service, true); \n"
         + "         this._xhr.send(this.body); \n"
         + "     }, \n"
         + "     abort: function() { \n"
         + "         if (this._xhr) { \n"
-        + "             this._xhr.removeEventListener('readystatechange', this, false); \n"
+        + "             this._xhr.removeEventListener('readystatechange', this.onResponseBount, false); \n"
         + "             this._xhr.abort(); \n"
         + "         } \n"
         + "     }, \n"
-        + "     handleEvent: function(e) { \n"
+        + "     onResponse: function(e) { \n"
         + "         try { \n"
         + "             status = e.target.status; \n"
         + "         } catch(e) {status = undefined;} \n"
@@ -1903,8 +1915,9 @@ Strophe.Connection.prototype = {
         + "     } "
         + " }";
 
-        //return new Worker("Frameworks/Debug/StropheCappuccino/Resources/Strophe/worker.js");
-        var blobBuilder;
+        var blobBuilder,
+            blobURL;
+
         if (window.BlobBuilder)
             blobBuilder = new window.BlobBuilder();
         else if (window.WebKitBlobBuilder)
@@ -1914,7 +1927,10 @@ Strophe.Connection.prototype = {
 
         blobBuilder.append(blob);
 
-        var blobURL = window.webkitURL.createObjectURL(blobBuilder.getBlob());
+        if (window.webkitURL)
+            blobURL = window.webkitURL.createObjectURL(blobBuilder.getBlob());
+        else if (window.URL)
+            blobURL = window.URL.createObjectURL(blobBuilder.getBlob());
 
         return new Worker(blobURL);
     },
