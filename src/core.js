@@ -1499,6 +1499,8 @@ Strophe.Request = function (elem, func, rid, worker, sends)
     this.worker = worker;
     this.bindedFunc = this.func.bind(null, this);
     this.readyState = 0;
+    this.result = "";
+    this.errorReason = "";
     this.status = 0;
     this.workerReply = null;
     this.onMessageBound = this.onMessage.bind(this);
@@ -1545,15 +1547,14 @@ Strophe.Request.prototype = {
         if (e.data.rid == this.rid)
         {
             this.workerReply = e.data;
+            this.result = this.workerReply.result;
+            this.errorReason = this.workerReply.errorReason;
             this.readyState = this.workerReply.readyState;
             this.status = this.workerReply.status;
             this.responseText = this.workerReply.responseText;
-
             if (this.readyState == 4)
-            {
-                if (this.worker)
-                    this.worker.removeEventListener("message", this.onMessageBound, true)
-            }
+                this.worker.removeEventListener("message", this.onMessageBound, true);
+
             this.bindedFunc(this);
         }
     },
@@ -1809,9 +1810,11 @@ Strophe.Connection.prototype = {
         this.connected = false;
         this.authenticated = false;
         this.errors = 0;
-        this._worker = this._makeWorker();
-        this._worker.postMessage({"action": "start"});
-
+        if (!this._worker)
+        {
+            this._worker = this._makeWorker();
+            this._worker.postMessage({"action": "start"});
+        }
         this.wait = wait || this.wait;
         this.hold = hold || this.hold;
 
@@ -1895,8 +1898,13 @@ Strophe.Connection.prototype = {
         + " }; \n"
         + " WorkerRequest.prototype = { \n"
         + "     perform: function() { \n"
+        + "         try {\n"
+        + "             this._xhr.open('POST', this.service, true); \n"
+        + "         } catch (ex) { \n"
+        + "             self.postMessage({'result': 'error', 'errorReason': 'bad-service', 'rid': this.rid}); \n"
+        + "             return; \n"
+        + "         } \n"
         + "         this._xhr.addEventListener('readystatechange', this.onResponseBount, false); \n"
-        + "         this._xhr.open('POST', this.service, true); \n"
         + "         this._xhr.send(this.body); \n"
         + "     }, \n"
         + "     abort: function() { \n"
@@ -1906,12 +1914,14 @@ Strophe.Connection.prototype = {
         + "         } \n"
         + "     }, \n"
         + "     onResponse: function(e) { \n"
-        + "         try { \n"
-        + "             status = e.target.status; \n"
-        + "         } catch(e) {status = undefined;} \n"
-        + "         self.postMessage({'rid': this.rid, 'readyState': e.target.readyState, 'responseText': e.target.responseText, 'status': status}); \n"
-        + "         if (e.target.readyState === 4) \n"
-        + "             delete requests[this.rid]; \n"
+        + "         try {\n"
+        + "             try { \n"
+        + "                 status = e.target.status; \n"
+        + "             } catch(ex) {status = undefined;} \n"
+        + "             self.postMessage({'result': 'ok', 'rid': this.rid, 'readyState': e.target.readyState, 'responseText': e.target.responseText, 'status': status}); \n"
+        + "             if (e.target.readyState === 4) \n"
+        + "              delete requests[this.rid]; \n"
+        + "         } catch (ex) { self.postMessage({'result': 'error', 'errorReason': ex,  'rid': this.rid}); } \n"
         + "     } "
         + " }";
 
@@ -2581,6 +2591,14 @@ Strophe.Connection.prototype = {
                       req.readyState);
         if (req.abort) {
             req.abort = false;
+            return;
+        }
+
+        if (req.result == "error") {
+            if (!this.connected) {
+                this._changeConnectStatus(Strophe.Status.CONNFAIL, req.errorReason);
+            }
+            this._doDisconnect();
             return;
         }
 
