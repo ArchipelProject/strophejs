@@ -5,21 +5,41 @@
     Copyright 2006-2008, OGG, LLC
 */
 
-/* jslint configuration: */
-/*global document, window, setTimeout, clearTimeout, console,
-    XMLHttpRequest, ActiveXObject,
-    Base64, MD5,
-    Strophe, $build, $msg, $iq, $pres */
+/* jshint undef: true, unused: true:, noarg: true, latedef: true */
+/* global define, window, clearTimeout, WebSocket, DOMParser, Strophe, $build */
 
-/** File: strophe.js
+(function (root, factory) {
+    if (typeof define === 'function' && define.amd) {
+        // AMD. Register as an anonymous module.
+        define(['strophe-core'], function (core) {
+            return factory(
+                core.Strophe,
+                core.$build
+            );
+        });
+    } else {
+        // Browser globals
+        return factory(Strophe, $build);
+    }
+}(this, function (Strophe, $build) {
+
+/** Class: Strophe.WebSocket
+ *  _Private_ helper class that handles WebSocket Connections
+ *
+ *  The Strophe.WebSocket class is used internally by Strophe.Connection
+ *  to encapsulate WebSocket sessions. It is not meant to be used from user's code.
+ */
+
+/** File: websocket.js
  *  A JavaScript library to enable XMPP over Websocket in Strophejs.
  *
  *  This file implements XMPP over WebSockets for Strophejs.
  *  If a Connection is established with a Websocket url (ws://...)
- *  Strophe will use WebSockets instead of BOSH.
- *  WebSocket support implemented by Andreas Guth (guth@dbis.rwth-aachen.de)
- *  For more information on XMPP-over WebSocket see this RFC draft:
- *  http://tools.ietf.org/html/draft-moffitt-xmpp-over-websocket-01
+ *  Strophe will use WebSockets.
+ *  For more information on XMPP-over-WebSocket see RFC 7395:
+ *  http://tools.ietf.org/html/rfc7395
+ *
+ *  WebSocket support implemented by Andreas Guth (andreas.guth@rwth-aachen.de)
  */
 
 /** PrivateConstructor: Strophe.Websocket
@@ -34,6 +54,30 @@
  */
 Strophe.Websocket = function(connection) {
     this._conn = connection;
+    this.strip = "wrapper";
+
+    var service = connection.service;
+    if (service.indexOf("ws:") !== 0 && service.indexOf("wss:") !== 0) {
+        // If the service is not an absolute URL, assume it is a path and put the absolute
+        // URL together from options, current URL and the path.
+        var new_service = "";
+
+        if (connection.options.protocol === "ws" && window.location.protocol !== "https:") {
+            new_service += "ws";
+        } else {
+            new_service += "wss";
+        }
+
+        new_service += "://" + window.location.host;
+
+        if (service.indexOf("/") !== 0) {
+            new_service += window.location.pathname + service;
+        } else {
+            new_service += service;
+        }
+
+        connection.service = new_service;
+    }
 };
 
 Strophe.Websocket.prototype = {
@@ -45,10 +89,9 @@ Strophe.Websocket.prototype = {
      */
     _buildStream: function ()
     {
-        return $build("stream:stream", {
+        return $build("open", {
+            "xmlns": Strophe.NS.FRAMING,
             "to": this._conn.domain,
-            "xmlns": Strophe.NS.CLIENT,
-            "xmlns:stream": Strophe.NS.STREAM,
             "version": '1.0'
         });
     },
@@ -63,19 +106,56 @@ Strophe.Websocket.prototype = {
      *     true if there was a streamerror, false otherwise.
      */
     _check_streamerror: function (bodyWrap, connectstatus) {
-        var errors = bodyWrap.getElementsByTagName("stream:error");
+        var errors = bodyWrap.getElementsByTagNameNS(Strophe.NS.STREAM, "error");
         if (errors.length === 0) {
             return false;
         }
         var error = errors[0];
-        var condition = error.childNodes[0].tagName;
-        var text = error.getElementsByTagName("text")[0].textContent;
-        Strophe.error("WebSocket stream error: " + condition + " - " + text);
+
+        var condition = "";
+        var text = "";
+
+        var ns = "urn:ietf:params:xml:ns:xmpp-streams";
+        for (var i = 0; i < error.childNodes.length; i++) {
+            var e = error.childNodes[i];
+            if (e.getAttribute("xmlns") !== ns) {
+                break;
+            } if (e.nodeName === "text") {
+                text = e.textContent;
+            } else {
+                condition = e.nodeName;
+            }
+        }
+
+        var errorString = "WebSocket stream error: ";
+
+        if (condition) {
+            errorString += condition;
+        } else {
+            errorString += "unknown";
+        }
+
+        if (text) {
+            errorString += " - " + condition;
+        }
+
+        Strophe.error(errorString);
 
         // close the connection on stream_error
         this._conn._changeConnectStatus(connectstatus, condition);
         this._conn._doDisconnect();
         return true;
+    },
+
+    /** PrivateFunction: _reset
+     *  Reset the connection.
+     *
+     *  This function is called by the reset function of the Strophe Connection.
+     *  Is not needed by WebSockets.
+     */
+    _reset: function ()
+    {
+        return;
     },
 
     /** PrivateFunction: _connect
@@ -85,13 +165,15 @@ Strophe.Websocket.prototype = {
      *  Does nothing if there already is a WebSocket.
      */
     _connect: function () {
-        if(!this.socket) {
-            this.socket = new WebSocket(this._conn.service, "xmpp");
-            this.socket.onopen = this._onOpen.bind(this);
-            this.socket.onerror = this._onError.bind(this);
-            this.socket.onclose = this._onClose.bind(this);
-            this.socket.onmessage = this._connect_cb_wrapper.bind(this);
-        }
+        // Ensure that there is no open WebSocket from a previous Connection.
+        this._closeSocket();
+
+        // Create the new WobSocket
+        this.socket = new WebSocket(this._conn.service, "xmpp");
+        this.socket.onopen = this._onOpen.bind(this);
+        this.socket.onerror = this._onError.bind(this);
+        this.socket.onclose = this._onClose.bind(this);
+        this.socket.onmessage = this._connect_cb_wrapper.bind(this);
     },
 
     /** PrivateFunction: _connect_cb
@@ -109,6 +191,41 @@ Strophe.Websocket.prototype = {
         }
     },
 
+    /** PrivateFunction: _handleStreamStart
+     * _Private_ function that checks the opening <open /> tag for errors.
+     *
+     * Disconnects if there is an error and returns false, true otherwise.
+     *
+     *  Parameters:
+     *    (Node) message - Stanza containing the <open /> tag.
+     */
+    _handleStreamStart: function(message) {
+        var error = false;
+
+        // Check for errors in the <open /> tag
+        var ns = message.getAttribute("xmlns");
+        if (typeof ns !== "string") {
+            error = "Missing xmlns in <open />";
+        } else if (ns !== Strophe.NS.FRAMING) {
+            error = "Wrong xmlns in <open />: " + ns;
+        }
+
+        var ver = message.getAttribute("version");
+        if (typeof ver !== "string") {
+            error = "Missing version in <open />";
+        } else if (ver !== "1.0") {
+            error = "Wrong version in <open />: " + ver;
+        }
+
+        if (error) {
+            this._conn._changeConnectStatus(Strophe.Status.CONNFAIL, error);
+            this._conn._doDisconnect();
+            return false;
+        }
+
+        return true;
+    },
+
     /** PrivateFunction: _connect_cb_wrapper
      * _Private_ function that handles the first connection messages.
      *
@@ -116,23 +233,38 @@ Strophe.Websocket.prototype = {
      * message handler. On receiving a stream error the connection is terminated.
      */
     _connect_cb_wrapper: function(message) {
-        //Inject namespaces into stream tags. has to be done because no SAX parser is used.
-        var string = message.data.replace(/^<stream:([a-z]*)>/, "<stream:$1 xmlns:stream='http://etherx.jabber.org/streams'>");;
-        //Make the initial stream:stream selfclosing to parse it without a SAX parser.
-        string = string.replace(/^<stream:stream (.*[^/])>/, "<stream:stream $1/>");
+        if (message.data.indexOf("<open ") === 0 || message.data.indexOf("<?xml") === 0) {
+            // Strip the XML Declaration, if there is one
+            var data = message.data.replace(/^(<\?.*?\?>\s*)*/, "");
+            if (data === '') return;
 
-        var parser = new DOMParser();
-        var elem = parser.parseFromString(string, "text/xml").documentElement;
+            var streamStart = new DOMParser().parseFromString(data, "text/xml").documentElement;
+            this._conn.xmlInput(streamStart);
+            this._conn.rawInput(message.data);
 
-        if (elem.nodeName != "stream:stream") {
-            this.socket.onmessage = this._onMessage.bind(this);
-            elem = this._conn._bodyWrap(elem).tree();
-            this._conn._connect_cb(elem);
+            //_handleStreamSteart will check for XML errors and disconnect on error
+            if (this._handleStreamStart(streamStart)) {
+                //_connect_cb will check for stream:error and disconnect on error
+                this._connect_cb(streamStart);
+            }
+        } else if (message.data.indexOf("<close ") === 0) { //'<close xmlns="urn:ietf:params:xml:ns:xmpp-framing />') {
+            this._conn.rawInput(message.data);
+            this._conn.xmlInput(message);
+            var see_uri = message.getAttribute("see-other-uri");
+            if (see_uri) {
+                this._conn._changeConnectStatus(Strophe.Status.REDIRECT, "Received see-other-uri, resetting connection");
+                this._conn.reset();
+                this._conn.service = see_uri;
+                this._connect();
+            } else {
+                this._conn._changeConnectStatus(Strophe.Status.CONNFAIL, "Received closing stream");
+                this._conn._doDisconnect();
+            }
         } else {
-            this._conn.xmlInput(elem);
-            this._conn.rawInput(Strophe.serialize(elem));
-            //_connect_cb will check for stream:error and disconnect on error
-            this._connect_cb(elem)
+            var string = this._streamWrap(message.data);
+            var elem = new DOMParser().parseFromString(string, "text/xml").documentElement;
+            this.socket.onmessage = this._onMessage.bind(this);
+            this._conn._connect_cb(elem, null, message.data);
         }
     },
 
@@ -146,25 +278,50 @@ Strophe.Websocket.prototype = {
      */
     _disconnect: function (pres)
     {
-        if (this.socket.readyState !== WebSocket.CLOSED) {
+        if (this.socket && this.socket.readyState !== WebSocket.CLOSED) {
             if (pres) {
                 this._conn.send(pres);
             }
-            var close = '</stream:stream>';
-            this._conn.xmlOutput(this._conn._bodyWrap(document.createElement("stream:stream")));
-            this._conn.rawOutput(close);
+            var close = $build("close", { "xmlns": Strophe.NS.FRAMING, });
+            this._conn.xmlOutput(close);
+            var closeString = Strophe.serialize(close);
+            this._conn.rawOutput(closeString);
             try {
-                this.socket.send(close);
-            } catch (e) {}
+                this.socket.send(closeString);
+            } catch (e) {
+                Strophe.info("Couldn't send <close /> tag.");
+            }
         }
+        this._conn._doDisconnect();
     },
 
     /** PrivateFunction: _doDisconnect
      *  _Private_ function to disconnect.
      *
-     *  Tries to close the socket if it still open
+     *  Just closes the Socket for WebSockets
      */
     _doDisconnect: function ()
+    {
+        Strophe.info("WebSockets _doDisconnect was called");
+        this._closeSocket();
+    },
+
+    /** PrivateFunction _streamWrap
+     *  _Private_ helper function to wrap a stanza in a <stream> tag.
+     *  This is used so Strophe can process stanzas from WebSockets like BOSH
+     */
+    _streamWrap: function (stanza)
+    {
+        return "<wrapper>" + stanza + '</wrapper>';
+    },
+
+
+    /** PrivateFunction: _closeSocket
+     *  _Private_ function to close the WebSocket.
+     *
+     *  Closes the socket if it is still open and deletes it
+     */
+    _closeSocket: function ()
     {
         if (this.socket) { try {
             this.socket.close();
@@ -186,10 +343,30 @@ Strophe.Websocket.prototype = {
     /** PrivateFunction: _onClose
      * _Private_ function to handle websockets closing.
      *
-     * Just calls _doDisconnect for WebSockets
+     * Nothing to do here for WebSockets
      */
-    _onClose: function(event) {
-        Strophe.log("Websocket disconnected");
+    _onClose: function() {
+        if(this._conn.connected && !this._conn.disconnecting) {
+            Strophe.error("Websocket closed unexcectedly");
+            this._conn._doDisconnect();
+        } else {
+            Strophe.info("Websocket closed");
+        }
+    },
+
+    /** PrivateFunction: _no_auth_received
+     *
+     * Called on stream start/restart when no stream:features
+     * has been received.
+     */
+    _no_auth_received: function (_callback)
+    {
+        Strophe.error("Server did not send any auth methods");
+        this._conn._changeConnectStatus(Strophe.Status.CONNFAIL, "Server did not send any auth methods");
+        if (_callback) {
+            _callback = _callback.bind(this._conn);
+            _callback();
+        }
         this._conn._doDisconnect();
     },
 
@@ -200,6 +377,11 @@ Strophe.Websocket.prototype = {
      */
     _onDisconnectTimeout: function () {},
 
+    /** PrivateFunction: _abortAllRequests
+     *  _Private_ helper function that makes sure all pending requests are aborted.
+     */
+    _abortAllRequests: function () {},
+
     /** PrivateFunction: _onError
      * _Private_ function to handle websockets errors.
      *
@@ -207,33 +389,37 @@ Strophe.Websocket.prototype = {
      * (Object) error - The websocket error.
      */
     _onError: function(error) {
-        Strophe.log("Websocket error " + error);
+        Strophe.error("Websocket error " + error);
+        this._conn._changeConnectStatus(Strophe.Status.CONNFAIL, "The WebSocket connection could not be established was disconnected.");
+        this._disconnect();
     },
 
     /** PrivateFunction: _onIdle
      *  _Private_ function called by Strophe.Connection._onIdle
      *
-     *  sends all queued stanzas 
+     *  sends all queued stanzas
      */
     _onIdle: function () {
         var data = this._conn._data;
         if (data.length > 0 && !this._conn.paused) {
-            for (i = 0; i < data.length; i++) {
+            for (var i = 0; i < data.length; i++) {
                 if (data[i] !== null) {
+                    var stanza, rawStanza;
                     if (data[i] === "restart") {
-                        var stanza = this._buildStream();
+                        stanza = this._buildStream().tree();
                     } else {
-                        var stanza = data[i];
+                        stanza = data[i];
                     }
+                    rawStanza = Strophe.serialize(stanza);
                     this._conn.xmlOutput(stanza);
-                    this._conn.rawOutput(Strophe.serialize(stanza));
-                    this.socket.send(Strophe.serialize(stanza));
+                    this._conn.rawOutput(rawStanza);
+                    this.socket.send(rawStanza);
                 }
             }
             this._conn._data = [];
         }
     },
-     
+
     /** PrivateFunction: _onMessage
      * _Private_ function to handle websockets messages.
      *
@@ -247,25 +433,27 @@ Strophe.Websocket.prototype = {
      * (string) message - The websocket message.
      */
     _onMessage: function(message) {
+        var elem, data;
         // check for closing stream
-        if (message.data === "</stream:stream>") {
-            var close = "</stream:stream>";
+        var close = '<close xmlns="urn:ietf:params:xml:ns:xmpp-framing" />';
+        if (message.data === close) {
             this._conn.rawInput(close);
-            this._conn.xmlInput(this._conn._bodyWrap(document.createElement("stream:stream")));
+            this._conn.xmlInput(message);
             if (!this._conn.disconnecting) {
                 this._conn._doDisconnect();
             }
             return;
+        } else if (message.data.search("<open ") === 0) {
+            // This handles stream restarts
+            elem = new DOMParser().parseFromString(message.data, "text/xml").documentElement;
+
+            if (!this._handleStreamStart(elem)) {
+                return;
+            }
+        } else {
+            data = this._streamWrap(message.data);
+            elem = new DOMParser().parseFromString(data, "text/xml").documentElement;
         }
-        //Inject namespaces into stream tags. has to be done because no SAX parser is used.
-        var string = message.data.replace(/^<stream:([a-z]*)>/, "<stream:$1 xmlns:stream='http://etherx.jabber.org/streams'>");
-        //Make the initial stream:stream selfclosing to parse it without a SAX parser.
-        string = string.replace(/^<stream:stream (.*[^/])>/, "<stream:stream $1/>");
-
-        parser = new DOMParser();
-        var elem = parser.parseFromString(string, "text/xml").documentElement;
-
-        var elem = this._conn._bodyWrap(elem).tree();
 
         if (this._check_streamerror(elem, Strophe.Status.ERROR)) {
             return;
@@ -280,9 +468,8 @@ Strophe.Websocket.prototype = {
             // if we are already disconnecting we will ignore the unavailable stanza and
             // wait for the </stream:stream> tag before we close the connection
             return;
-        } else {
-            this._conn._dataRecv(elem);
         }
+        this._conn._dataRecv(elem, message.data);
     },
 
     /** PrivateFunction: _onOpen
@@ -291,9 +478,9 @@ Strophe.Websocket.prototype = {
      * The opening stream tag is sent here.
      */
     _onOpen: function() {
-        Strophe.log("Websocket open");
+        Strophe.info("Websocket open");
         var start = this._buildStream();
-        this._conn.xmlOutput(start);
+        this._conn.xmlOutput(start.tree());
 
         var startString = Strophe.serialize(start);
         this._conn.rawOutput(startString);
@@ -335,3 +522,5 @@ Strophe.Websocket.prototype = {
         this._conn._onIdle.bind(this._conn)();
     }
 };
+return Strophe;
+}));
