@@ -10,5 +10,5 @@ doc
 *.tar.gz
 *.zip
 *~
-strophe.min.js
 strophe.js
+strophe.min.js
